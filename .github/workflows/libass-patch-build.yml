@@ -223,7 +223,34 @@ jobs:
 
             mkdir -p "${dst}/include" "${dst}/lib"
             cp -a "${src}/include/." "${dst}/include/"
-            find "${src}/lib" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -a {} "${dst}/lib/" \;
+
+            copy_runtime_lib() {
+              local lib_name="$1"
+              local matches=( "${src}/lib/${lib_name}"* )
+              if [ ! -e "${matches[0]}" ]; then
+                echo "Required runtime library ${lib_name} was not produced for ${abi}" | tee -a "${LIBASS_DIAG}"
+                find "${src}/lib" -maxdepth 1 -type f -name "*.so*" | sort | tee -a "${LIBASS_DIAG}"
+                exit 1
+              fi
+              cp -a "${matches[@]}" "${dst}/lib/"
+            }
+
+            runtime_libs=(
+              libass.so
+              libfreetype.so
+              libfribidi.so
+              libharfbuzz.so
+              libbrotlicommon.so
+              libbrotlidec.so
+              libbz2.so
+              libpng16.so
+              libz.so
+            )
+
+            echo "Selected runtime libs for ${abi}: ${runtime_libs[*]}" | tee -a "${LIBASS_DIAG}"
+            for runtime_lib in "${runtime_libs[@]}"; do
+              copy_runtime_lib "${runtime_lib}"
+            done
 
             echo "::group::libass install tree for ${abi}"
             find "${src}" -maxdepth 3 -type f | sort | tee -a "${LIBASS_DIAG}"
@@ -242,7 +269,7 @@ jobs:
               exit 1
             fi
 
-            for required in libass.so libfreetype.so libfribidi.so libharfbuzz.so; do
+            for required in "${runtime_libs[@]}"; do
               if ! compgen -G "${dst}/lib/${required}*" >/dev/null; then
                 echo "Required ${required} was not copied for ${abi}" | tee -a "${LIBASS_DIAG}"
                 find "${dst}/lib" -maxdepth 1 -type f | sort | tee -a "${LIBASS_DIAG}"
@@ -304,13 +331,36 @@ jobs:
           grep -q -- "-DCONFIG_LIBASS" gradle-build.log
           grep -q "subtitle_libass.c" gradle-build.log
 
+          expected_runtime_libs=(
+            libass.so
+            libfreetype.so
+            libfribidi.so
+            libharfbuzz.so
+            libbrotlicommon.so
+            libbrotlidec.so
+            libbz2.so
+            libpng16.so
+            libz.so
+          )
+          unexpected_harfbuzz_libs=(
+            libharfbuzz-gpu.so
+            libharfbuzz-raster.so
+            libharfbuzz-subset.so
+            libharfbuzz-vector.so
+          )
+
           for abi in armeabi-v7a arm64-v8a x86 x86_64; do
             echo "::group::Verify MediaLib native libs for ${abi}"
             test -f "MediaLib/libs/${abi}/libavos.so"
-            test -f "MediaLib/libs/${abi}/libass.so"
-            test -f "MediaLib/libs/${abi}/libfreetype.so"
-            test -f "MediaLib/libs/${abi}/libfribidi.so"
-            test -f "MediaLib/libs/${abi}/libharfbuzz.so"
+            for expected_runtime_lib in "${expected_runtime_libs[@]}"; do
+              test -f "MediaLib/libs/${abi}/${expected_runtime_lib}"
+            done
+            for unexpected_harfbuzz_lib in "${unexpected_harfbuzz_libs[@]}"; do
+              if [ -e "MediaLib/libs/${abi}/${unexpected_harfbuzz_lib}" ]; then
+                echo "Unexpected ${unexpected_harfbuzz_lib} was packaged for ${abi}; libass only needs libharfbuzz.so"
+                exit 1
+              fi
+            done
 
             find "MediaLib/libs/${abi}" -maxdepth 1 -type f -name "*.so*" | sort | tee -a "${LIBASS_DIAG}"
             "${READ_ELF}" -d "MediaLib/libs/${abi}/libavos.so" | tee -a "${LIBASS_DIAG}"
@@ -336,10 +386,15 @@ jobs:
             echo "::group::Verify APK native contents $(basename "${apk}")"
             unzip -l "${apk}" "lib/*/*.so" | tee -a "${LIBASS_DIAG}"
             if unzip -l "${apk}" | grep -q "lib/.*/libavos.so"; then
-              unzip -l "${apk}" | grep -q "lib/.*/libass.so"
-              unzip -l "${apk}" | grep -q "lib/.*/libfreetype.so"
-              unzip -l "${apk}" | grep -q "lib/.*/libfribidi.so"
-              unzip -l "${apk}" | grep -q "lib/.*/libharfbuzz.so"
+              for expected_runtime_lib in "${expected_runtime_libs[@]}"; do
+                unzip -l "${apk}" | grep -q "lib/.*/${expected_runtime_lib}"
+              done
+              for unexpected_harfbuzz_lib in "${unexpected_harfbuzz_libs[@]}"; do
+                if unzip -l "${apk}" | grep -q "lib/.*/${unexpected_harfbuzz_lib}"; then
+                  echo "Unexpected ${unexpected_harfbuzz_lib} was packaged in $(basename "${apk}")"
+                  exit 1
+                fi
+              done
             fi
             echo "::endgroup::"
           done
