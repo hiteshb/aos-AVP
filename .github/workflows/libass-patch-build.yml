@@ -235,7 +235,7 @@ jobs:
               cp -a "${matches[@]}" "${dst}/lib/"
             }
 
-            runtime_libs=(
+            vcpkg_runtime_libs=(
               libass.so
               libfreetype.so
               libfribidi.so
@@ -246,11 +246,69 @@ jobs:
               libpng16.so
               libz.so
             )
+            ndk_runtime_libs=(
+              libc++_shared.so
+            )
+            runtime_libs=(
+              "${vcpkg_runtime_libs[@]}"
+              "${ndk_runtime_libs[@]}"
+            )
+
+            find_ndk_libcxx() {
+              local abi="$1"
+              local triple="$2"
+              local found=""
+              local legacy="${ANDROID_NDK_HOME}/sources/cxx-stl/llvm-libc++/libs/${abi}/libc++_shared.so"
+
+              if [ -f "${legacy}" ]; then
+                printf '%s\n' "${legacy}"
+                return 0
+              fi
+
+              found="$(find "${ANDROID_NDK_HOME}/toolchains/llvm" -path "*/sysroot/usr/lib/${triple}*/libc++_shared.so" -type f | sort -V | tail -n 1)"
+              if [ -n "${found}" ] && [ -f "${found}" ]; then
+                printf '%s\n' "${found}"
+                return 0
+              fi
+
+              found="$(find "${ANDROID_NDK_HOME}" -path "*/${abi}/libc++_shared.so" -type f | sort -V | tail -n 1)"
+              if [ -n "${found}" ] && [ -f "${found}" ]; then
+                printf '%s\n' "${found}"
+                return 0
+              fi
+
+              return 1
+            }
+
+            copy_ndk_libcxx() {
+              local abi="$1"
+              local triple="$2"
+              local libcxx=""
+
+              if ! libcxx="$(find_ndk_libcxx "${abi}" "${triple}")"; then
+                echo "Required NDK libc++_shared.so was not found for ${abi}" | tee -a "${LIBASS_DIAG}"
+                find "${ANDROID_NDK_HOME}" -name "libc++_shared.so" -type f | sort | tee -a "${LIBASS_DIAG}"
+                exit 1
+              fi
+
+              echo "Using ${libcxx} for ${abi}" | tee -a "${LIBASS_DIAG}"
+              cp -a "${libcxx}" "${dst}/lib/libc++_shared.so"
+            }
 
             echo "Selected runtime libs for ${abi}: ${runtime_libs[*]}" | tee -a "${LIBASS_DIAG}"
-            for runtime_lib in "${runtime_libs[@]}"; do
+            for runtime_lib in "${vcpkg_runtime_libs[@]}"; do
               copy_runtime_lib "${runtime_lib}"
             done
+            case "${abi}" in
+              armeabi-v7a) copy_ndk_libcxx "${abi}" arm-linux-androideabi ;;
+              arm64-v8a) copy_ndk_libcxx "${abi}" aarch64-linux-android ;;
+              x86) copy_ndk_libcxx "${abi}" i686-linux-android ;;
+              x86_64) copy_ndk_libcxx "${abi}" x86_64-linux-android ;;
+              *)
+                echo "Unknown ABI ${abi}; cannot select NDK libc++ runtime" | tee -a "${LIBASS_DIAG}"
+                exit 1
+                ;;
+            esac
 
             echo "::group::libass install tree for ${abi}"
             find "${src}" -maxdepth 3 -type f | sort | tee -a "${LIBASS_DIAG}"
@@ -294,8 +352,8 @@ jobs:
               "${READ_ELF}" -h "${so}" | sed -n '1,25p' | tee -a "${LIBASS_DIAG}"
               "${READ_ELF}" -d "${so}" | tee -a "${LIBASS_DIAG}"
               if "${READ_ELF}" -d "${so}" | grep -q "libc++_shared.so"; then
-                echo "${so} depends on libc++_shared.so, but Nova packaging excludes that runtime"
-                exit 1
+                test -f "native/prebuilt/libass/dist-${abi}/lib/libc++_shared.so"
+                echo "${so} depends on libc++_shared.so; packaged NDK runtime is present" | tee -a "${LIBASS_DIAG}"
               fi
             done
             if ! "${READ_ELF}" -d "native/prebuilt/libass/dist-${abi}/lib/libass.so" | grep -q "libfreetype\|libfribidi\|libharfbuzz"; then
@@ -341,6 +399,7 @@ jobs:
             libbz2.so
             libpng16.so
             libz.so
+            libc++_shared.so
           )
           unexpected_harfbuzz_libs=(
             libharfbuzz-gpu.so
@@ -368,8 +427,8 @@ jobs:
 
             for so in MediaLib/libs/${abi}/*.so*; do
               if "${READ_ELF}" -d "${so}" | grep -q "libc++_shared.so"; then
-                echo "${so} depends on libc++_shared.so, but Nova packaging excludes that runtime"
-                exit 1
+                test -f "MediaLib/libs/${abi}/libc++_shared.so"
+                echo "${so} depends on libc++_shared.so; packaged runtime is present" | tee -a "${LIBASS_DIAG}"
               fi
             done
             echo "::endgroup::"
