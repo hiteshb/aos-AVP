@@ -65,6 +65,18 @@ jobs:
             echo "Using Android NDK: ${LATEST_NDK}"
           fi
 
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "${SDKMANAGER}" --licenses >/dev/null || true
+          "${SDKMANAGER}" \
+            "platform-tools" \
+            "platforms;android-31" \
+            "platforms;android-35" \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "build-tools;36.0.0"
+
       - name: Point submodules at upstream repos plus your patched aos-avos fork
         run: |
           AVOS_REPO="${AVOS_REPO_INPUT:-${GITHUB_REPOSITORY_OWNER}/aos-avos}"
@@ -104,12 +116,14 @@ jobs:
 
       - name: Build Nova
         run: |
+          set -o pipefail
           cd Video
           if [ "${ENABLE_LIBASS}" = "true" ]; then
             echo "::warning::LIBASS=ON requires Android libass and dependency prebuilts. Keep this off until those are added."
             export LIBASS=ON
           fi
-          ./gradlew "${GRADLE_TASK}" --stacktrace
+          ./gradlew --version
+          ./gradlew "${GRADLE_TASK}" --stacktrace --warning-mode all 2>&1 | tee ../gradle-build.log
 
       - name: Upload APKs and reports
         if: always()
@@ -118,6 +132,7 @@ jobs:
           name: nova-libass-patch-build
           if-no-files-found: warn
           path: |
+            gradle-build.log
             Video/build/outputs/apk/**/*.apk
             Video/build/reports/**/*.html
             Video/build/reports/**/*.xml
