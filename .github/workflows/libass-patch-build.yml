@@ -125,6 +125,50 @@ jobs:
           ./gradlew --version
           ./gradlew "${GRADLE_TASK}" --stacktrace --warning-mode all 2>&1 | tee ../gradle-build.log
 
+      - name: Self-sign unsigned release APKs
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$(find "${ANDROID_HOME}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          ZIPALIGN="${BUILD_TOOLS}/zipalign"
+          APKSIGNER="${BUILD_TOOLS}/apksigner"
+          KEYSTORE="${RUNNER_TEMP}/nova-test-signing.jks"
+          SIGNED_DIR="${GITHUB_WORKSPACE}/signed-apks"
+
+          mkdir -p "${SIGNED_DIR}"
+          keytool -genkeypair \
+            -keystore "${KEYSTORE}" \
+            -storepass android \
+            -keypass android \
+            -alias nova-test \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Nova Test,O=Codex,C=US"
+
+          shopt -s globstar nullglob
+          unsigned_apks=(Video/build/outputs/apk/**/*-unsigned.apk)
+          if [ "${#unsigned_apks[@]}" -eq 0 ]; then
+            echo "No unsigned APKs found to self-sign."
+            exit 0
+          fi
+
+          for apk in "${unsigned_apks[@]}"; do
+            name="$(basename "${apk}" .apk)"
+            aligned="${RUNNER_TEMP}/${name}-aligned.apk"
+            signed="${SIGNED_DIR}/${name}-selfsigned.apk"
+            "${ZIPALIGN}" -p -f 4 "${apk}" "${aligned}"
+            "${APKSIGNER}" sign \
+              --ks "${KEYSTORE}" \
+              --ks-key-alias nova-test \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --out "${signed}" \
+              "${aligned}"
+            "${APKSIGNER}" verify --verbose "${signed}"
+          done
+
+          ls -lh "${SIGNED_DIR}"
+
       - name: Upload APKs and reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -133,6 +177,7 @@ jobs:
           if-no-files-found: warn
           path: |
             gradle-build.log
+            signed-apks/**/*.apk
             Video/build/outputs/apk/**/*.apk
             Video/build/reports/**/*.html
             Video/build/reports/**/*.xml
