@@ -58,6 +58,17 @@ git push -u origin libass-subtitles
 
 The workflow also runs automatically when you push to the `libass-subtitles` branch. If the build succeeds, download the `nova-libass-patch-build` artifact and use the `signed-apks` files for sideload testing.
 
+## How to judge the CI result
+
+The workflow writes `build-inputs.log`, `libass-diagnostics.log`, and `gradle-build.log` into the artifact. A correct libass-enabled build must show:
+
+- `gradle-build.log`: `-DCONFIG_LIBASS` and `subtitle_libass.c`.
+- `libass-diagnostics.log`: `libavos.so` has `DT_NEEDED` for `libass.so`.
+- `libass-diagnostics.log`: every ABI has `libass.so`, `libfreetype.so`, `libfribidi.so`, and `libharfbuzz.so`.
+- `libass-diagnostics.log`: every generated APK contains those libraries under `lib/$ABI/`.
+
+If any of those checks fail, the workflow exits with an error instead of producing a misleading green build.
+
 ## Current technical status
 
 - Embedded `AV_CODEC_ID_ASS` and `AV_CODEC_ID_SSA` packets are preserved and routed to libass when `CONFIG_LIBASS` is enabled.

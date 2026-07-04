@@ -49,11 +49,13 @@ jobs:
 
       - name: Install native build packages
         run: |
+          set -euxo pipefail
           sudo apt-get update || sudo apt-get update
-          sudo apt-get install -y nasm meson ninja-build maven build-essential wget curl unzip zip tar git pkg-config ca-certificates
+          sudo apt-get install -y nasm meson ninja-build maven build-essential wget curl unzip zip tar git pkg-config ca-certificates file
 
       - name: Select hosted Android NDK
         run: |
+          set -euxo pipefail
           if [ -n "${ANDROID_NDK_LATEST_HOME:-}" ]; then
             echo "ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME}" >> "$GITHUB_ENV"
             echo "ANDROID_NDK_ROOT=${ANDROID_NDK_LATEST_HOME}" >> "$GITHUB_ENV"
@@ -67,6 +69,7 @@ jobs:
 
       - name: Install Android SDK packages
         run: |
+          set -euxo pipefail
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
           yes | "${SDKMANAGER}" --licenses >/dev/null || true
           "${SDKMANAGER}" \
@@ -79,6 +82,7 @@ jobs:
 
       - name: Point submodules at upstream repos plus your patched aos-avos fork
         run: |
+          set -euxo pipefail
           AVOS_REPO="${AVOS_REPO_INPUT:-${GITHUB_REPOSITORY_OWNER}/aos-avos}"
           echo "Using native/avos repo: ${AVOS_REPO}"
 
@@ -109,23 +113,62 @@ jobs:
 
       - name: Checkout patched native/avos ref
         run: |
+          set -euxo pipefail
           git -C native/avos fetch origin "${AVOS_REF}"
           git -C native/avos checkout FETCH_HEAD
           git -C native/avos log -1 --oneline
           git -C native/avos status --short
 
+      - name: Log build inputs and toolchain state
+        run: |
+          set -euxo pipefail
+          {
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "workspace=${GITHUB_WORKSPACE}"
+            echo "avos_ref=${AVOS_REF}"
+            echo "avos_repo_input=${AVOS_REPO_INPUT}"
+            echo "gradle_task=${GRADLE_TASK}"
+            echo "enable_libass=${ENABLE_LIBASS}"
+            echo "android_home=${ANDROID_HOME}"
+            echo "android_ndk_home=${ANDROID_NDK_HOME}"
+            echo "java_home=${JAVA_HOME}"
+          } | tee build-inputs.log
+
+          java -version 2>&1 | tee -a build-inputs.log
+          "${ANDROID_NDK_HOME}/ndk-build" --version 2>&1 | tee -a build-inputs.log || true
+          "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version 2>&1 | tee -a build-inputs.log
+          cmake --version 2>&1 | tee -a build-inputs.log || true
+          meson --version 2>&1 | tee -a build-inputs.log
+          ninja --version 2>&1 | tee -a build-inputs.log
+          pkg-config --version 2>&1 | tee -a build-inputs.log
+
+          git -C native/avos log -1 --decorate --stat | tee -a build-inputs.log
+          grep -R "CONFIG_LIBASS\|subtitle_libass\|LOCAL_MODULE := libass" -n \
+            native/avos/Include \
+            native/avos/Source \
+            native/avos/jni \
+            native/avos/codecs.mk \
+            native/avos/common.mk \
+            2>/dev/null || true
+
       - name: Build Android libass prebuilts
         if: env.ENABLE_LIBASS == 'true'
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           VCPKG_ROOT="${RUNNER_TEMP}/vcpkg"
           TRIPLET_DIR="${RUNNER_TEMP}/vcpkg-triplets"
+          LIBASS_DIAG="${GITHUB_WORKSPACE}/libass-diagnostics.log"
+          : > "${LIBASS_DIAG}"
 
           if [ ! -x "${VCPKG_ROOT}/vcpkg" ]; then
             git clone --depth 1 https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
             "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
           fi
+
+          "${VCPKG_ROOT}/vcpkg" version 2>&1 | tee -a "${LIBASS_DIAG}"
+          git -C "${VCPKG_ROOT}" log -1 --oneline 2>&1 | tee -a "${LIBASS_DIAG}"
 
           mkdir -p "${TRIPLET_DIR}"
 
@@ -157,26 +200,55 @@ jobs:
           create_android_triplet nova-x86-android x86 x86 i686-linux-android
           create_android_triplet nova-x64-android x64 x86_64 x86_64-linux-android
 
+          echo "::group::Generated vcpkg Android triplets"
+          for triplet_file in "${TRIPLET_DIR}"/*.cmake; do
+            echo "### ${triplet_file}" | tee -a "${LIBASS_DIAG}"
+            sed -n '1,120p' "${triplet_file}" | tee -a "${LIBASS_DIAG}"
+          done
+          echo "::endgroup::"
+
           build_libass_for_abi() {
             local abi="$1"
             local triplet="$2"
             local src="${VCPKG_ROOT}/installed/${triplet}"
             local dst="${GITHUB_WORKSPACE}/native/prebuilt/libass/dist-${abi}"
+            local pkg_config_path="${src}/lib/pkgconfig:${src}/share/pkgconfig"
 
+            echo "::group::vcpkg install libass for ${abi} (${triplet})"
             "${VCPKG_ROOT}/vcpkg" install "libass:${triplet}" \
               --overlay-triplets="${TRIPLET_DIR}" \
               --clean-after-build \
-              --disable-metrics
+              --disable-metrics 2>&1 | tee -a "${LIBASS_DIAG}"
+            echo "::endgroup::"
 
             mkdir -p "${dst}/include" "${dst}/lib"
             cp -a "${src}/include/." "${dst}/include/"
             find "${src}/lib" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -a {} "${dst}/lib/" \;
+
+            echo "::group::libass install tree for ${abi}"
+            find "${src}" -maxdepth 3 -type f | sort | tee -a "${LIBASS_DIAG}"
+            echo "::endgroup::"
+
+            echo "::group::copied libass prebuilts for ${abi}"
+            find "${dst}" -maxdepth 3 -type f | sort | tee -a "${LIBASS_DIAG}"
+            file "${dst}"/lib/*.so* | tee -a "${LIBASS_DIAG}"
+            sha256sum "${dst}"/lib/*.so* | tee -a "${LIBASS_DIAG}"
+            PKG_CONFIG_PATH="${pkg_config_path}" pkg-config --cflags --libs libass 2>&1 | tee -a "${LIBASS_DIAG}"
+            echo "::endgroup::"
 
             if [ ! -f "${dst}/lib/libass.so" ]; then
               echo "libass.so was not produced for ${abi} (${triplet})"
               find "${src}" -maxdepth 3 -type f | sort
               exit 1
             fi
+
+            for required in libass.so libfreetype.so libfribidi.so libharfbuzz.so; do
+              if ! compgen -G "${dst}/lib/${required}*" >/dev/null; then
+                echo "Required ${required} was not copied for ${abi}" | tee -a "${LIBASS_DIAG}"
+                find "${dst}/lib" -maxdepth 1 -type f | sort | tee -a "${LIBASS_DIAG}"
+                exit 1
+              fi
+            done
           }
 
           build_libass_for_abi armeabi-v7a nova-arm-neon-android
@@ -189,22 +261,30 @@ jobs:
 
           READ_ELF="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           for abi in armeabi-v7a arm64-v8a x86 x86_64; do
-            echo "DT_NEEDED for ${abi}/libass.so"
-            "${READ_ELF}" -d "native/prebuilt/libass/dist-${abi}/lib/libass.so" | grep NEEDED || true
+            echo "::group::readelf libass stack for ${abi}"
             for so in native/prebuilt/libass/dist-${abi}/lib/*.so*; do
+              echo "### ${so}" | tee -a "${LIBASS_DIAG}"
+              "${READ_ELF}" -h "${so}" | sed -n '1,25p' | tee -a "${LIBASS_DIAG}"
+              "${READ_ELF}" -d "${so}" | tee -a "${LIBASS_DIAG}"
               if "${READ_ELF}" -d "${so}" | grep -q "libc++_shared.so"; then
                 echo "${so} depends on libc++_shared.so, but Nova packaging excludes that runtime"
                 exit 1
               fi
             done
+            if ! "${READ_ELF}" -d "native/prebuilt/libass/dist-${abi}/lib/libass.so" | grep -q "libfreetype\|libfribidi\|libharfbuzz"; then
+              echo "libass.so for ${abi} does not show expected font/shaping dependencies"
+              exit 1
+            fi
+            echo "::endgroup::"
           done
 
       - name: Build Nova
         run: |
-          set -o pipefail
+          set -euxo pipefail
           cd Video
           if [ "${ENABLE_LIBASS}" = "true" ]; then
             export LIBASS=ON
+            export VERBOSE=1
             echo "Building Nova with LIBASS=ON"
           else
             unset LIBASS
@@ -213,9 +293,60 @@ jobs:
           ./gradlew --version
           ./gradlew "${GRADLE_TASK}" --stacktrace --warning-mode all 2>&1 | tee ../gradle-build.log
 
+      - name: Verify libass-enabled native output
+        if: env.ENABLE_LIBASS == 'true'
+        run: |
+          set -euxo pipefail
+          READ_ELF="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          LIBASS_DIAG="${GITHUB_WORKSPACE}/libass-diagnostics.log"
+          : "${LIBASS_DIAG:=libass-diagnostics.log}"
+
+          grep -q -- "-DCONFIG_LIBASS" gradle-build.log
+          grep -q "subtitle_libass.c" gradle-build.log
+
+          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            echo "::group::Verify MediaLib native libs for ${abi}"
+            test -f "MediaLib/libs/${abi}/libavos.so"
+            test -f "MediaLib/libs/${abi}/libass.so"
+            test -f "MediaLib/libs/${abi}/libfreetype.so"
+            test -f "MediaLib/libs/${abi}/libfribidi.so"
+            test -f "MediaLib/libs/${abi}/libharfbuzz.so"
+
+            find "MediaLib/libs/${abi}" -maxdepth 1 -type f -name "*.so*" | sort | tee -a "${LIBASS_DIAG}"
+            "${READ_ELF}" -d "MediaLib/libs/${abi}/libavos.so" | tee -a "${LIBASS_DIAG}"
+            "${READ_ELF}" -d "MediaLib/libs/${abi}/libavos.so" | grep -q "libass.so"
+
+            for so in MediaLib/libs/${abi}/*.so*; do
+              if "${READ_ELF}" -d "${so}" | grep -q "libc++_shared.so"; then
+                echo "${so} depends on libc++_shared.so, but Nova packaging excludes that runtime"
+                exit 1
+              fi
+            done
+            echo "::endgroup::"
+          done
+
+          shopt -s globstar nullglob
+          unsigned_apks=(Video/build/outputs/apk/**/*-unsigned.apk)
+          if [ "${#unsigned_apks[@]}" -eq 0 ]; then
+            echo "No unsigned APKs found after Gradle build"
+            exit 1
+          fi
+
+          for apk in "${unsigned_apks[@]}"; do
+            echo "::group::Verify APK native contents $(basename "${apk}")"
+            unzip -l "${apk}" "lib/*/*.so" | tee -a "${LIBASS_DIAG}"
+            if unzip -l "${apk}" | grep -q "lib/.*/libavos.so"; then
+              unzip -l "${apk}" | grep -q "lib/.*/libass.so"
+              unzip -l "${apk}" | grep -q "lib/.*/libfreetype.so"
+              unzip -l "${apk}" | grep -q "lib/.*/libfribidi.so"
+              unzip -l "${apk}" | grep -q "lib/.*/libharfbuzz.so"
+            fi
+            echo "::endgroup::"
+          done
+
       - name: Self-sign unsigned release APKs
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           BUILD_TOOLS="$(find "${ANDROID_HOME}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           ZIPALIGN="${BUILD_TOOLS}/zipalign"
           APKSIGNER="${BUILD_TOOLS}/apksigner"
@@ -253,6 +384,7 @@ jobs:
               --out "${signed}" \
               "${aligned}"
             "${APKSIGNER}" verify --verbose "${signed}"
+            unzip -l "${signed}" "lib/*/*.so" | tee -a "${GITHUB_WORKSPACE}/libass-diagnostics.log"
           done
 
           ls -lh "${SIGNED_DIR}"
@@ -265,6 +397,8 @@ jobs:
           if-no-files-found: warn
           path: |
             gradle-build.log
+            build-inputs.log
+            libass-diagnostics.log
             signed-apks/**/*.apk
             Video/build/outputs/apk/**/*.apk
             Video/build/reports/**/*.html
