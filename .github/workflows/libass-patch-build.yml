@@ -119,6 +119,17 @@ jobs:
           git -C native/avos log -1 --oneline
           git -C native/avos status --short
 
+      - name: Allow packaged libc++ runtime for libass stack
+        if: env.ENABLE_LIBASS == 'true'
+        run: |
+          set -euxo pipefail
+          sed -i '/libc++_shared\.so/d' MediaLib/build.gradle Video/build.gradle
+          if grep -R "libc++_shared\.so" MediaLib/build.gradle Video/build.gradle; then
+            echo "libc++_shared.so is still excluded from native packaging"
+            exit 1
+          fi
+          grep -n -C 4 "packagingOptions\|jniLibs\|excludes" MediaLib/build.gradle Video/build.gradle || true
+
       - name: Log build inputs and toolchain state
         run: |
           set -euxo pipefail
@@ -446,7 +457,10 @@ jobs:
             unzip -l "${apk}" "lib/*/*.so" | tee -a "${LIBASS_DIAG}"
             if unzip -l "${apk}" | grep -q "lib/.*/libavos.so"; then
               for expected_runtime_lib in "${expected_runtime_libs[@]}"; do
-                unzip -l "${apk}" | grep -q "lib/.*/${expected_runtime_lib}"
+                if ! unzip -l "${apk}" | grep -q "lib/.*/${expected_runtime_lib}"; then
+                  echo "Expected ${expected_runtime_lib} was not packaged in $(basename "${apk}")"
+                  exit 1
+                fi
               done
               for unexpected_harfbuzz_lib in "${unexpected_harfbuzz_libs[@]}"; do
                 if unzip -l "${apk}" | grep -q "lib/.*/${unexpected_harfbuzz_lib}"; then
