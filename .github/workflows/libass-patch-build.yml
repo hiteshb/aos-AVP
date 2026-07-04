@@ -16,10 +16,10 @@ on:
         required: true
         default: assembleNoamazonRelease
       enable_libass:
-        description: Export LIBASS=ON for the native build. Requires Android libass prebuilts/deps to be present.
+        description: Build Android libass prebuilts and export LIBASS=ON for the native build.
         required: true
         type: boolean
-        default: false
+        default: true
   push:
     branches:
       - libass-subtitles
@@ -32,7 +32,7 @@ jobs:
       AVOS_REF: ${{ github.event.inputs.avos_ref || 'libass-subtitles' }}
       AVOS_REPO_INPUT: ${{ github.event.inputs.avos_repo }}
       GRADLE_TASK: ${{ github.event.inputs.gradle_task || 'assembleNoamazonRelease' }}
-      ENABLE_LIBASS: ${{ github.event.inputs.enable_libass || 'false' }}
+      ENABLE_LIBASS: ${{ (github.event_name == 'workflow_dispatch' && inputs.enable_libass) || github.event_name != 'workflow_dispatch' }}
 
     steps:
       - name: Checkout parent repo
@@ -50,7 +50,7 @@ jobs:
       - name: Install native build packages
         run: |
           sudo apt-get update || sudo apt-get update
-          sudo apt-get install -y nasm meson ninja-build maven build-essential wget curl unzip git pkg-config
+          sudo apt-get install -y nasm meson ninja-build maven build-essential wget curl unzip zip tar git pkg-config ca-certificates
 
       - name: Select hosted Android NDK
         run: |
@@ -114,13 +114,101 @@ jobs:
           git -C native/avos log -1 --oneline
           git -C native/avos status --short
 
+      - name: Build Android libass prebuilts
+        if: env.ENABLE_LIBASS == 'true'
+        run: |
+          set -euo pipefail
+
+          VCPKG_ROOT="${RUNNER_TEMP}/vcpkg"
+          TRIPLET_DIR="${RUNNER_TEMP}/vcpkg-triplets"
+
+          if [ ! -x "${VCPKG_ROOT}/vcpkg" ]; then
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
+            "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+          fi
+
+          mkdir -p "${TRIPLET_DIR}"
+
+          create_android_triplet() {
+            local triplet="$1"
+            local arch="$2"
+            local android_abi="$3"
+            local make_host="$4"
+            local neon="${5:-}"
+
+            cat > "${TRIPLET_DIR}/${triplet}.cmake" <<EOF
+          set(VCPKG_TARGET_ARCHITECTURE ${arch})
+          set(VCPKG_CRT_LINKAGE static)
+          set(VCPKG_LIBRARY_LINKAGE dynamic)
+          set(VCPKG_CMAKE_SYSTEM_NAME Android)
+          set(VCPKG_CMAKE_SYSTEM_VERSION 23)
+          set(VCPKG_MAKE_BUILD_TRIPLET "--host=${make_host}")
+          set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DANDROID_ABI=${android_abi})
+          set(VCPKG_BUILD_TYPE release)
+          EOF
+
+            if [ "${neon}" = "ON" ]; then
+              echo "set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DANDROID_ABI=${android_abi} -DANDROID_ARM_NEON=ON)" >> "${TRIPLET_DIR}/${triplet}.cmake"
+            fi
+          }
+
+          create_android_triplet nova-arm-neon-android arm armeabi-v7a armv7a-linux-androideabi ON
+          create_android_triplet nova-arm64-android arm64 arm64-v8a aarch64-linux-android
+          create_android_triplet nova-x86-android x86 x86 i686-linux-android
+          create_android_triplet nova-x64-android x64 x86_64 x86_64-linux-android
+
+          build_libass_for_abi() {
+            local abi="$1"
+            local triplet="$2"
+            local src="${VCPKG_ROOT}/installed/${triplet}"
+            local dst="${GITHUB_WORKSPACE}/native/prebuilt/libass/dist-${abi}"
+
+            "${VCPKG_ROOT}/vcpkg" install "libass:${triplet}" \
+              --overlay-triplets="${TRIPLET_DIR}" \
+              --clean-after-build \
+              --disable-metrics
+
+            mkdir -p "${dst}/include" "${dst}/lib"
+            cp -a "${src}/include/." "${dst}/include/"
+            find "${src}/lib" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -a {} "${dst}/lib/" \;
+
+            if [ ! -f "${dst}/lib/libass.so" ]; then
+              echo "libass.so was not produced for ${abi} (${triplet})"
+              find "${src}" -maxdepth 3 -type f | sort
+              exit 1
+            fi
+          }
+
+          build_libass_for_abi armeabi-v7a nova-arm-neon-android
+          build_libass_for_abi arm64-v8a nova-arm64-android
+          build_libass_for_abi x86 nova-x86-android
+          build_libass_for_abi x86_64 nova-x64-android
+
+          echo "Built libass prebuilts:"
+          find native/prebuilt/libass -maxdepth 4 -type f -name "*.so*" | sort
+
+          READ_ELF="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            echo "DT_NEEDED for ${abi}/libass.so"
+            "${READ_ELF}" -d "native/prebuilt/libass/dist-${abi}/lib/libass.so" | grep NEEDED || true
+            for so in native/prebuilt/libass/dist-${abi}/lib/*.so*; do
+              if "${READ_ELF}" -d "${so}" | grep -q "libc++_shared.so"; then
+                echo "${so} depends on libc++_shared.so, but Nova packaging excludes that runtime"
+                exit 1
+              fi
+            done
+          done
+
       - name: Build Nova
         run: |
           set -o pipefail
           cd Video
           if [ "${ENABLE_LIBASS}" = "true" ]; then
-            echo "::warning::LIBASS=ON requires Android libass and dependency prebuilts. Keep this off until those are added."
             export LIBASS=ON
+            echo "Building Nova with LIBASS=ON"
+          else
+            unset LIBASS
+            echo "Building Nova with LIBASS disabled"
           fi
           ./gradlew --version
           ./gradlew "${GRADLE_TASK}" --stacktrace --warning-mode all 2>&1 | tee ../gradle-build.log

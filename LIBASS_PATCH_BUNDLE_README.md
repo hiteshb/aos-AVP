@@ -6,7 +6,7 @@ This bundle lets you build and iterate on the libass subtitle work without shari
 
 - `patches/aos-avos-libass-renderer.patch`: native `aos-avos` changes that add the optional libass renderer path for embedded and external ASS/SSA subtitles.
 - `patches/aos-AVP-remote-build.patch`: parent `aos-AVP` changes that add this README and a GitHub Actions workflow.
-- `.github/workflows/libass-patch-build.yml`: a workflow that checks out your patched `aos-avos` fork while using upstream Nova submodules for everything else.
+- `.github/workflows/libass-patch-build.yml`: a workflow that checks out your patched `aos-avos` fork, builds Android libass prebuilts with vcpkg, then builds self-signed Nova APKs.
 
 ## One-time GitHub setup
 
@@ -26,7 +26,7 @@ cd aos-avos
 git switch -c libass-subtitles origin/ffmpeg_n8_0
 git apply ../patches/aos-avos-libass-renderer.patch
 git status --short
-git add Include Source codecs.mk common.mk
+git add Include Source jni codecs.mk common.mk
 git commit -m "Add optional libass subtitle renderer"
 git push -u origin libass-subtitles
 ```
@@ -39,7 +39,7 @@ cd aos-AVP
 git switch -c libass-subtitles origin/nova
 git apply ../patches/aos-AVP-remote-build.patch
 git status --short
-git add .github/workflows/libass-patch-build.yml LIBASS_PATCH_BUNDLE_README.md
+git add .github/workflows/libass-patch-build.yml core.mk LIBASS_PATCH_BUNDLE_README.md
 git commit -m "Add remote build workflow for libass subtitle patch"
 git push -u origin libass-subtitles
 ```
@@ -54,9 +54,9 @@ git push -u origin libass-subtitles
    - `avos_ref`: `libass-subtitles`
    - `avos_repo`: leave blank if your fork is `YOUR_NAME/aos-avos`
    - `gradle_task`: `assembleNoamazonRelease`
-   - `enable_libass`: `false` for the first run
+   - `enable_libass`: `true`
 
-The first run proves the patched source still builds with the old subtitle behavior. After Android libass prebuilts/deps are added, run again with `enable_libass: true`.
+The workflow also runs automatically when you push to the `libass-subtitles` branch. If the build succeeds, download the `nova-libass-patch-build` artifact and use the `signed-apks` files for sideload testing.
 
 ## Current technical status
 
@@ -64,8 +64,9 @@ The first run proves the patched source still builds with the old subtitle behav
 - External `.ass` and `.ssa` sidecar files are routed through libass when `CONFIG_LIBASS` is enabled.
 - The Nova video rendering path is intentionally untouched.
 - The feature is still gated behind `LIBASS=ON`.
-- Android libass prebuilts and dependencies are not included yet.
+- GitHub Actions builds Android libass, FreeType, FriBidi, HarfBuzz, and their generated shared-library dependencies with vcpkg for each Nova ABI.
+- The parent makefile copies those libass/vcpkg `.so` files into `MediaLib/libs/$ABI` so Gradle packages them into the split APKs.
 
 ## Expected next iteration
 
-After the first CI run, paste the failed log or artifact result back into Codex. The next real engineering step is adding Android builds/prebuilts for libass and its dependencies, then enabling `LIBASS=ON` in CI.
+Run the workflow with `enable_libass: true`. If it fails, paste the uploaded `gradle-build.log` or the failing Actions section back into Codex so the native link/package issue can be tightened.

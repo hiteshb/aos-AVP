@@ -130,6 +130,7 @@ OPENSSL_DIR := native/openssl-android-builder
 OPENSSL_PREBUILT_DIR := native/prebuilt/openssl
 LIBMYSOFA_DIR := native/libmysofa-android-builder
 LIBMYSOFA_PREBUILT_DIR := native/prebuilt/libmysofa
+LIBASS_PREBUILT_DIR := native/prebuilt/libass
 TORRENTD_PREBUILT_DIR := native/prebuilt/torrentd
 
 NATIVE_PKG_LIST := \
@@ -280,6 +281,27 @@ define cp_ffmpeg_libs
 	fi
 endef
 
+define cp_libass_libs
+	@if [ "$(LIBASS)" = "ON" ];then \
+		if [ "$(NDK_CPU_ARM_NEON)" = "1" ];then \
+			mkdir -p $(1)/libs/armeabi-v7a; \
+			cp -r $(LIBASS_PREBUILT_DIR)/dist-armeabi-v7a/lib/*so* $(1)/libs/armeabi-v7a; \
+		fi; \
+		if [ "$(NDK_CPU_X86)" = "1" ];then \
+			mkdir -p $(1)/libs/x86; \
+			cp -r $(LIBASS_PREBUILT_DIR)/dist-x86/lib/*so* $(1)/libs/x86; \
+		fi; \
+		if [ "$(NDK_CPU_ARM_64)" = "1" ];then \
+			mkdir -p $(1)/libs/arm64-v8a; \
+			cp -r $(LIBASS_PREBUILT_DIR)/dist-arm64-v8a/lib/*so* $(1)/libs/arm64-v8a; \
+		fi; \
+		if [ "$(NDK_CPU_X86_64)" = "1" ];then \
+			mkdir -p $(1)/libs/x86_64; \
+			cp -r $(LIBASS_PREBUILT_DIR)/dist-x86_64/lib/*so* $(1)/libs/x86_64; \
+		fi; \
+	fi
+endef
+
 define make_avos
 	MAKE_JOBS=$(MAKE_JOBS) BUILD=$(BUILD) $(ndk_debug) NDK_APP_ABI="$(NDK_APP_ABI)" LIBAV_CONFIG=$(2) make native_build_native/avos
 
@@ -304,6 +326,7 @@ define make_avos
 		mkdir -p $(1)/libs/x86_64; \
 		cp -r $(AVOS_DIR)/libs/x86_64/*so $(1)/libs/x86_64; \
 	fi
+	$(call cp_libass_libs,$(1))
 endef
 
 native_avos: native_build_native/avos
