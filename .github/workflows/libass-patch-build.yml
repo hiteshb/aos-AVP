@@ -130,6 +130,15 @@ jobs:
           fi
           grep -n -C 4 "packagingOptions\|jniLibs\|excludes" MediaLib/build.gradle Video/build.gradle || true
 
+      - name: Apply libass subtitle UI cleanup patch
+        if: env.ENABLE_LIBASS == 'true'
+        run: |
+          set -euxo pipefail
+          git -C Video apply --check ../patches/video-subtitle-clear-on-stop.patch
+          git -C Video apply --verbose ../patches/video-subtitle-clear-on-stop.patch
+          grep -n "clearSubtitleViews\|sendMessageAtFrontOfQueue" Video/src/main/java/com/archos/mediacenter/video/player/SubtitleManager.java
+          git -C Video diff -- src/main/java/com/archos/mediacenter/video/player/SubtitleManager.java
+
       - name: Log build inputs and toolchain state
         run: |
           set -euxo pipefail

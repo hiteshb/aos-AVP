@@ -1,0 +1,102 @@
+diff --git a/src/main/java/com/archos/mediacenter/video/player/SubtitleManager.java b/src/main/java/com/archos/mediacenter/video/player/SubtitleManager.java
+--- a/src/main/java/com/archos/mediacenter/video/player/SubtitleManager.java
++++ b/src/main/java/com/archos/mediacenter/video/player/SubtitleManager.java
+@@ -148,8 +148,7 @@ public class SubtitleManager {
+         switch (msg.what) {
+             case MSG_STOP_SUBTITLE:
+                 if (log.isDebugEnabled()) log.debug("handleMessage: MSG_STOP_SUBTITLE");
+-                mSubtitleTxtView.setVisibility(View.GONE);
+-                mSubtitleGfxView.setVisibility(View.GONE);
++                clearSubtitleViews();
+                 break;
+             case MSG_DISPLAY_SUBTITLE: {
+                 if (log.isDebugEnabled()) log.debug("handleMessage: MSG_DISPLAY_SUBTITLE");
+@@ -172,20 +171,42 @@ public class SubtitleManager {
+         }
+     }
+-
++
++    private void clearSubtitleViews() {
++        if (mSubtitleTxtView != null) {
++            mSubtitleTxtView.setText("");
++            mSubtitleTxtView.setVisibility(View.GONE);
++            mSubtitleTxtView.postInvalidate();
++        }
++        if (mSubtitleGfxView != null) {
++            mSubtitleGfxView.remove();
++        }
++        currentSubtitle = null;
++    }
++
+     private void removeView(Subtitle subtitle) {
+         if (log.isDebugEnabled()) log.debug("removeView");
+         if (subtitle.isText()) {
++            if (mSubtitleTxtView == null)
++                return;
+             mSubtitleTxtView.setText("");
+             mSubtitleTxtView.setVisibility(View.GONE);
+             // need to Invalidate View to force an update!
+             mSubtitleTxtView.postInvalidate();
+         } else if (subtitle.isBitmap()) {
++            if (mSubtitleGfxView == null)
++                return;
+             mSubtitleGfxView.remove();
+         }
+     }
+-
++
+     private void displayView(Subtitle subtitle) {
+         if (log.isDebugEnabled()) log.debug("displayView sub duration={}", subtitle.getDuration());
++        if (mSubtitleLayout == null || mSubtitleTxtView == null || mSubtitleGfxView == null) {
++            if (log.isDebugEnabled()) {
++                log.debug("displayView ignored because subtitle views are detached");
++            }
++            return;
++        }
+-
++
+         if (subtitle.isText()) {
+             if (mIsSubtitleGfx || isFirstTime) { // transition or first time we need to adjustView
+@@ -556,7 +577,10 @@ public class SubtitleManager {
+                 mCurrentSubtitle = null;
+                 mNextSubtitle = null;
+             }
+-            mHandler.sendMessage(mHandler.obtainMessage(MSG_STOP_SUBTITLE));
++            mHandler.removeMessages(MSG_DISPLAY_SUBTITLE);
++            mHandler.removeMessages(MSG_REMOVE_SUBTITLE);
++            mHandler.removeMessages(MSG_STOP_SUBTITLE);
++            mHandler.sendMessageAtFrontOfQueue(mHandler.obtainMessage(MSG_STOP_SUBTITLE));
+         }
+-
++
+         synchronized void setSuspended(boolean suspended) {
+@@ -685,8 +709,19 @@ public class SubtitleManager {
+         if (mSubtitleLayout == null)
+             return;
+         if (log.isDebugEnabled()) log.debug("detachWindow");
++        mHandler.removeMessages(MSG_DISPLAY_SUBTITLE);
++        mHandler.removeMessages(MSG_REMOVE_SUBTITLE);
++        mHandler.removeMessages(MSG_STOP_SUBTITLE);
++        clearSubtitleViews();
+         mPlayerView.removeView(mSubtitleLayout);
+         mSubtitleLayout = null;
++        mSubtitleGfxView = null;
++        mSubtitleTxtView = null;
++        mSubtitleSpacer = null;
++        mSubtitleSpacerParams = null;
++        mRootView = null;
++        mIsSubtitleGfx = false;
++        isFirstTime = true;
+     }
+-
++
+     public void start() {
+@@ -708,6 +740,7 @@ public class SubtitleManager {
+     public void stop() {
+         if (log.isDebugEnabled()) log.debug("stop");
+-
++
++        clearSubtitleViews();
+         if (mDispSubtitleThread != null) {
+             mDispSubtitleThread.quit();
+         }
